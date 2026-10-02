@@ -5,7 +5,7 @@ import { changeStatus, createReport } from './repository.js';
 import { refreshServerReports, retryReport, syncNow } from './sync.js';
 
 const validReport = (overrides: Record<string, unknown> = {}) => ({ category: 'equipment' as const, priority: 'high' as const, description: 'Broken pump handle', location: { text: 'North well' }, customFields: {}, ...overrides });
-beforeEach(async () => { await db.delete(); await db.open(); });
+beforeEach(async () => { vi.unstubAllGlobals(); await db.delete(); await db.open(); });
 afterAll(async () => { await db.delete(); });
 
 describe('offline report repository', () => {
@@ -74,6 +74,32 @@ describe('sync engine', () => {
     await retryReport(report.clientId);
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ 'Idempotency-Key': expect.not.stringMatching(op!.opId) });
     expect(await db.outbox.where('clientId').equals(report.clientId).count()).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps a permanent API rejection visible without retrying it automatically', async () => {
+    const report = await createReport(validReport());
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes('/api/reports?') ? new Response('[]') : new Response(JSON.stringify({ code: 'INVALID_TRANSITION', message: 'Coordinator action required.' }), { status: 409 }));
+    vi.stubGlobal('localStorage', { getItem: () => 'field_worker' }); vi.stubGlobal('fetch', fetchMock);
+    await syncNow();
+    const operation = await db.outbox.where('clientId').equals(report.clientId).first();
+    expect(operation).toMatchObject({ permanentlyFailed: true, lastError: 'Coordinator action required.' });
+    expect(await db.reports.get(report.clientId)).toMatchObject({ syncState: 'failed', lastSyncError: 'Coordinator action required.' });
+    expect(fetchMock.mock.calls.filter(call => !String(call[0]).includes('/api/reports?'))).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('shares one active sync promise so concurrent calls only send once', async () => {
+    const report = await createReport(validReport());
+    let resolvePost!: (response: Response) => void;
+    const postResponse = new Promise<Response>(resolve => { resolvePost = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).includes('/api/reports?') ? Promise.resolve(new Response('[]')) : postResponse);
+    vi.stubGlobal('localStorage', { getItem: () => 'field_worker' }); vi.stubGlobal('fetch', fetchMock);
+    const first = syncNow(), second = syncNow();
+    expect(second).toBe(first);
+    resolvePost(new Response(JSON.stringify({ id: 'server-concurrent', clientId: report.clientId, status: 'Submitted', version: 1 }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    await first;
+    expect(fetchMock.mock.calls.filter(call => !String(call[0]).includes('/api/reports?'))).toHaveLength(1);
     vi.unstubAllGlobals();
   });
 });

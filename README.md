@@ -39,6 +39,18 @@ Server tests use an in-memory SQLite database. `better-sqlite3` may need a match
 - `server/` Express API and SQLite persistence
 - `shared/` schemas, types and report status state machine
 - `docs/SYNC.md` sync and conflict policy
+- `docs/QA.md` automated test guidance and manual acceptance checklist
+
+## API overview
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Connectivity check |
+| `GET` | `/api/reports` | List reports; optional `status` and `updatedSince` filters |
+| `POST` | `/api/reports` | Create or deduplicate a report (`Idempotency-Key` required) |
+| `GET` | `/api/reports/:id` | Report details and server history |
+| `PATCH` | `/api/reports/:id/status` | Validated workflow transition (`X-Role: coordinator`) |
+| `PATCH` | `/api/reports/:id` | Optimistic field edit (`baseVersion` and `Idempotency-Key` required) |
 
 ## Assumptions and limitations
 
@@ -46,11 +58,7 @@ There is no authentication; `X-Role` is a demo role switch. Drafts stay local un
 
 ## Manual QA
 
-- [ ] Create an issue online; confirm it syncs.
-- [ ] Create an issue offline, refresh, then reconnect; confirm one server record.
-- [ ] Use coordinator view to assign and progress a report.
-- [ ] Stop the API during sync and confirm the report remains queued.
-- [ ] Verify required-description validation and the history timeline.
+See [docs/QA.md](docs/QA.md) for the full acceptance checklist.
 
 ## AI tool disclosure
 
