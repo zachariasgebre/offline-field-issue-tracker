@@ -21,6 +21,13 @@ export function App() {
     void refresh(); const timer = window.setInterval(refresh, 30_000); return () => clearInterval(timer);
   }, [role, apiOnline]);
   const visible = useMemo(() => reports.filter(r => (role !== 'coordinator' || !!r.serverId) && (filter === 'All' || (filter === 'Failed' ? r.syncState === 'failed' : r.status === filter))), [reports, filter, role]);
+  useEffect(() => {
+    if (!selected) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById('report-detail')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selected]);
   const setUserRole = (value: string) => { localStorage.setItem('field-role', value); setRole(value); };
   async function add(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -66,7 +73,7 @@ function Detail({ report, role, onMove }: { report: Report; role: string; onMove
       setEditing(false); setSaved('Changes saved on this device and queued to sync.'); void syncNow(true);
     } catch (e) { setSaved(e instanceof Error ? e.message : 'Could not save changes.'); }
   }
-  return <div className="detail">
+  return <div id="report-detail" className="detail">
     <div className="detail-title"><h3>Report history</h3><div className="detail-controls"><span>{history.length} events</span><button onClick={() => setEditing(!editing)}>{editing ? 'Cancel edit' : 'Edit report'}</button></div></div>
     {saved && <p className="edit-message" role="status">{saved}</p>}
     {editing && <form className="edit-form" onSubmit={saveEdit}><label>Description<textarea name="description" required minLength={1} maxLength={5000} defaultValue={report.description}/></label><div className="field-row"><label>Issue type<select name="category" defaultValue={report.category}>{categories.map(c => <option value={c} key={c}>{label(c)}</option>)}</select></label><label>Priority<select name="priority" defaultValue={report.priority}>{priorities.map(p => <option value={p} key={p}>{label(p)}</option>)}</select></label></div><label>Location<input name="location" defaultValue={report.location.text ?? ''}/></label><button className="button primary" type="submit">Save changes</button></form>}
