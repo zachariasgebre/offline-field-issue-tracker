@@ -15,7 +15,7 @@ React, Vite and TypeScript; Dexie/IndexedDB; Express and SQLite; shared Zod doma
 
 ## Getting started
 
-Requires Node 20+.
+Requires Node 22.13+ (the server uses Node's built-in SQLite module).
 
 ```sh
 npm install
@@ -31,7 +31,7 @@ npm test
 npm run build
 ```
 
-Server tests use an in-memory SQLite database. `better-sqlite3` may need a matching prebuilt binary or the platform C++ build tools when installing on newer Node releases.
+Server tests use an in-memory SQLite database.
 
 ## Structure
 

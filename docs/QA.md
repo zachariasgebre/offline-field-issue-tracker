@@ -9,7 +9,7 @@ npm run build
 npm test
 ```
 
-Shared and client tests run without a server process. Server API tests use Supertest with an in-memory SQLite database. `better-sqlite3` is a native module; if there is no prebuilt binary for the installed Node release, install the platform C++ build tools or use a Node release with a published binary.
+Shared and client tests run without a server process. Server API tests use Supertest with an in-memory SQLite database. The server uses Node's built-in SQLite module, so no native package compilation is needed.
 
 ## Manual offline workflow
 

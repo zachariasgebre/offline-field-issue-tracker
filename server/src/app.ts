@@ -1,9 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import { randomUUID } from 'node:crypto';
+import type { SQLInputValue } from 'node:sqlite';
 import { z } from 'zod';
 import { canTransition, reportInputSchema, reportPatchSchema, statuses, type Status } from '@field/shared';
-import { db, insertHistory } from './db.js';
+import { db, insertHistory, transaction } from './db.js';
 
 export const app = express();
 app.use(cors()); app.use(express.json());
@@ -26,7 +27,7 @@ app.post('/api/reports', (req, res, next) => {
     const input = reportInputSchema.parse(req.body);
     if (input.status === 'Draft') return res.status(400).json({ code: 'DRAFT_NOT_SYNCABLE', message: 'Drafts are stored locally until submitted.' });
     if (input.status !== 'Submitted' && role(req) !== 'coordinator') return res.status(403).json({ code: 'FORBIDDEN', message: 'Only coordinators can set this status.' });
-    const result = db.transaction(() => {
+    const result = transaction(() => {
       let report = getByClientId.get(input.clientId) as any;
       if (!report) {
         const now = new Date().toISOString(), id = randomUUID();
@@ -38,15 +39,15 @@ app.post('/api/reports', (req, res, next) => {
       const body = toReport(report);
       saveOp.run(opId, report.id, 201, JSON.stringify(body), new Date().toISOString());
       return body;
-    })();
+    });
     res.status(201).json(result);
   } catch (e) { next(e); }
 });
 
 app.get('/api/reports', (req, res) => {
-  const clauses: string[] = []; const args: unknown[] = [];
-  if (req.query.status) { clauses.push('status = ?'); args.push(req.query.status); }
-  if (req.query.updatedSince) { clauses.push('updated_at > ?'); args.push(req.query.updatedSince); }
+  const clauses: string[] = []; const args: SQLInputValue[] = [];
+  if (typeof req.query.status === 'string') { clauses.push('status = ?'); args.push(req.query.status); }
+  if (typeof req.query.updatedSince === 'string') { clauses.push('updated_at > ?'); args.push(req.query.updatedSince); }
   const rows = db.prepare(`SELECT * FROM reports ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY updated_at DESC`).all(...args);
   res.json(rows.map(toReport));
 });
@@ -60,7 +61,7 @@ app.patch('/api/reports/:id/status', (req, res, next) => {
   try {
     const opId = req.header('Idempotency-Key'); if (!opId) return res.status(400).json({ code: 'MISSING_IDEMPOTENCY_KEY', message: 'Idempotency-Key is required.' });
     const to = z.enum(statuses).parse(req.body.status) as Status;
-    const result = db.transaction(() => {
+    const result = transaction(() => {
       const replay = getOp.get(opId) as any;
       if (replay) return { status: replay.response_status, body: JSON.parse(replay.response_body) };
       const row = reportRow.get(req.params.id) as any;
@@ -78,17 +79,17 @@ app.patch('/api/reports/:id/status', (req, res, next) => {
       }
       saveOp.run(opId, row?.id ?? req.params.id, outcome.status, JSON.stringify(outcome.body), new Date().toISOString());
       return outcome;
-    })();
+    });
     return res.status(result.status).json(result.body);
   } catch (e) { next(e); }
-});
+    });
 function awaitlessTransitions(status: Status) { return ({ Draft: ['Submitted'], Submitted: ['Assigned', 'Rejected'], Assigned: ['In Progress', 'Rejected'], 'In Progress': ['Resolved', 'Rejected'], Resolved: [], Rejected: [] } as Record<Status, string[]>)[status]; }
 
 app.patch('/api/reports/:id', (req, res, next) => {
   try {
     const opId = req.header('Idempotency-Key'); if (!opId) return res.status(400).json({ code: 'MISSING_IDEMPOTENCY_KEY', message: 'Idempotency-Key is required.' });
     const patch = reportPatchSchema.parse(req.body);
-    const result = db.transaction(() => {
+    const result = transaction(() => {
       const replay = getOp.get(opId) as any;
       if (replay) return { status: replay.response_status, body: JSON.parse(replay.response_body) };
       const row = reportRow.get(req.params.id) as any;
@@ -96,7 +97,7 @@ app.patch('/api/reports/:id', (req, res, next) => {
       if (!row) outcome = { status: 404, body: { code: 'NOT_FOUND', message: 'Report not found.' } };
       else if (patch.baseVersion !== row.version) outcome = { status: 409, body: { code: 'VERSION_CONFLICT', message: 'Report changed on the server.', current: toReport(row) } };
       else {
-        const sets: string[] = [], values: unknown[] = [];
+        const sets: string[] = [], values: SQLInputValue[] = [];
         for (const key of ['description', 'priority', 'category'] as const) if (patch[key] !== undefined) { sets.push(`${key} = ?`); values.push(patch[key]); }
         if (patch.location) for (const [key, value] of [['lat', patch.location.lat], ['lng', patch.location.lng], ['location_text', patch.location.text]] as const) { sets.push(`${key} = ?`); values.push(value ?? null); }
         if (patch.customFields) { sets.push('custom_fields = ?'); values.push(JSON.stringify(patch.customFields)); }
@@ -107,7 +108,7 @@ app.patch('/api/reports/:id', (req, res, next) => {
       }
       saveOp.run(opId, row?.id ?? req.params.id, outcome.status, JSON.stringify(outcome.body), new Date().toISOString());
       return outcome;
-    })();
+    });
     return res.status(result.status).json(result.body);
   } catch (e) { next(e); }
 });

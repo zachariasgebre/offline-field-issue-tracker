@@ -102,4 +102,18 @@ describe('sync engine', () => {
     expect(fetchMock.mock.calls.filter(call => !String(call[0]).includes('/api/reports?'))).toHaveLength(1);
     vi.unstubAllGlobals();
   });
+
+  it('lets Sync now bypass the scheduled backoff for transient failures', async () => {
+    const report = await createReport(validReport());
+    const operation = await db.outbox.where('clientId').equals(report.clientId).first();
+    await db.outbox.update(operation!.opId, { attempts: 2, nextRetryAt: new Date(Date.now() + 60_000).toISOString(), lastError: 'Failed to fetch' });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes('/api/reports?') ? new Response('[]') : new Response(JSON.stringify({ id: 'server-retry', clientId: report.clientId, status: 'Submitted', version: 1 }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('localStorage', { getItem: () => 'field_worker' }); vi.stubGlobal('fetch', fetchMock);
+    await syncNow();
+    expect(fetchMock.mock.calls.filter(call => !String(call[0]).includes('/api/reports?'))).toHaveLength(0);
+    await syncNow(true);
+    expect(await db.outbox.where('clientId').equals(report.clientId).count()).toBe(0);
+    expect(fetchMock.mock.calls.filter(call => !String(call[0]).includes('/api/reports?'))).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
 });
