@@ -34,11 +34,11 @@ async function push(op: OutboxOp) {
     }); await wait(Math.min(backoff, 5000));
   }
 }
-export function syncNow() {
+export function syncNow(forceRetry = false) {
   if (syncing) return syncing;
   syncing = (async () => {
     const ops = await db.outbox.orderBy('createdAt').toArray();
-    for (const op of ops) { if (op.permanentlyFailed || (op.nextRetryAt && op.nextRetryAt > new Date().toISOString())) continue; await push(op); }
+    for (const op of ops) { if (op.permanentlyFailed || (!forceRetry && op.nextRetryAt && op.nextRetryAt > new Date().toISOString())) continue; await push(op); }
     await pullUpdates();
   })().finally(() => { syncing = undefined; });
   return syncing;
@@ -55,7 +55,7 @@ export async function retryReport(clientId: string) {
     const report = await db.reports.get(clientId);
     if (report) { report.syncState = 'pending'; report.syncAttempts = 0; report.lastSyncError = undefined; await db.reports.put(report); }
   });
-  return syncNow();
+  return syncNow(true);
 }
 async function pullUpdates() {
   try {
