@@ -8,11 +8,11 @@ Reports are written to IndexedDB first. Every non-draft write also adds an outbo
 
 ## Connectivity and retry
 
-Browser online/offline events update the indicator. The client also pings `/api/health`, syncs on app load, every 30 seconds when work is queued, and on demand. Network errors and 5xx responses are retried with exponential backoff capped at five minutes. Permanent 4xx responses are marked failed and remain visible.
+Browser online/offline events update the indicator. The client also pings `/api/health`, syncs on app load, every 30 seconds when work is queued, and on demand. Network errors and 5xx responses are retried with exponential backoff capped at five minutes. Permanent 4xx responses are marked failed and remain visible. A manual retry after a permanent failure creates a new operation ID; retries for transient failures keep their original key.
 
 ## Idempotency
 
-`clientId` is unique in SQLite. Each outbox operation sends its immutable `opId` in `Idempotency-Key`; the server stores the response in `processed_ops` alongside create and status history changes. A retry after a lost response replays the original response.
+`clientId` is unique in SQLite. Each outbox operation sends its immutable `opId` in `Idempotency-Key`; the server stores the response in `processed_ops` in the same transaction as report and history changes. A retry after a lost response replays the original response.
 
 ## Conflict policy
 

@@ -31,6 +31,8 @@ npm test
 npm run build
 ```
 
+Server tests use an in-memory SQLite database. `better-sqlite3` may need a matching prebuilt binary or the platform C++ build tools when installing on newer Node releases.
+
 ## Structure
 
 - `client/` React application, Dexie repository and sync engine
