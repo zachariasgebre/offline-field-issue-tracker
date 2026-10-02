@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from './db.js';
 import { changeStatus, createReport } from './repository.js';
-import { retryReport, syncNow } from './sync.js';
+import { refreshServerReports, retryReport, syncNow } from './sync.js';
 
 const validReport = (overrides: Record<string, unknown> = {}) => ({ category: 'equipment' as const, priority: 'high' as const, description: 'Broken pump handle', location: { text: 'North well' }, customFields: {}, ...overrides });
 beforeEach(async () => { await db.delete(); await db.open(); });
@@ -36,6 +36,21 @@ describe('offline report repository', () => {
 });
 
 describe('sync engine', () => {
+  it('imports coordinator reports from the API into the local database', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([{ id: 'remote-1', clientId: 'remote-client', category: 'safety', description: 'Loose railing', location: { text: 'Bridge' }, priority: 'critical', status: 'Assigned', reportedAt: new Date().toISOString(), customFields: {}, version: 3, updatedAt: new Date().toISOString() }]), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    await refreshServerReports();
+    expect(await db.reports.get('remote-client')).toMatchObject({ serverId: 'remote-1', status: 'Assigned', syncState: 'synchronized', serverVersion: 3 });
+    vi.unstubAllGlobals();
+  });
+
+  it('does not replace local fields while a report has queued work', async () => {
+    const local = await createReport(validReport());
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([{ id: 'remote-1', clientId: local.clientId, category: 'safety', description: 'Server copy', location: {}, priority: 'low', status: 'Assigned', reportedAt: local.reportedAt, customFields: {}, version: 2, updatedAt: new Date().toISOString() }]), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    await refreshServerReports();
+    expect(await db.reports.get(local.clientId)).toMatchObject({ description: local.description, status: 'Submitted' });
+    vi.unstubAllGlobals();
+  });
+
   it('acknowledges a create before removing its outbox operation', async () => {
     const report = await createReport(validReport());
     vi.stubGlobal('localStorage', { getItem: () => 'field_worker' });

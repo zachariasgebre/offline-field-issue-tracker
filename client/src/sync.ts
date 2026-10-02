@@ -1,4 +1,4 @@
-import { db, type OutboxOp } from './db.js';
+import { db, type OutboxOp, type Report } from './db.js';
 let syncing: Promise<void> | undefined;
 const api = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -61,11 +61,26 @@ async function pullUpdates() {
   try {
     const response = await fetch(`${api}/api/reports?updatedSince=${encodeURIComponent(new Date(Date.now() - 86_400_000).toISOString())}`);
     if (!response.ok) return;
-    const rows = await response.json();
-    for (const server of rows) {
-      const local = await db.reports.where('clientId').equals(server.clientId).first();
-      if (local && await db.outbox.where('clientId').equals(server.clientId).count() > 0) continue;
-      if (local) await db.reports.put({ ...local, ...server, clientId: server.clientId, serverId: server.id, syncState: 'synchronized', serverVersion: server.version });
-    }
+    await mergeServerRows(await response.json());
   } catch { /* A pull failure leaves local data untouched. */ }
+}
+export async function refreshServerReports() {
+  const response = await fetch(`${api}/api/reports`);
+  if (!response.ok) throw new Error(`Could not load server reports (${response.status}).`);
+  await mergeServerRows(await response.json());
+}
+async function mergeServerRows(rows: any[]) {
+  await db.transaction('rw', db.reports, db.outbox, async () => {
+    for (const server of rows) {
+      const local = await db.reports.get(server.clientId);
+      if (await db.outbox.where('clientId').equals(server.clientId).count() > 0) continue;
+      const merged: Report = {
+        clientId: server.clientId, serverId: server.id, category: server.category, description: server.description,
+        location: server.location ?? {}, priority: server.priority, status: server.status, reportedAt: server.reportedAt,
+        customFields: server.customFields ?? {}, syncState: 'synchronized', syncAttempts: local?.syncAttempts ?? 0,
+        lastSyncedAt: new Date().toISOString(), serverVersion: server.version, updatedAt: server.updatedAt
+      };
+      await db.reports.put(merged);
+    }
+  });
 }
