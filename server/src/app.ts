@@ -1,7 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import { randomUUID } from 'node:crypto';
-import { canTransition, reportInputSchema, type Status } from '@field/shared';
+import { z } from 'zod';
+import { canTransition, reportInputSchema, reportPatchSchema, statuses, type Status } from '@field/shared';
 import { db, insertHistory } from './db.js';
 
 export const app = express();
@@ -58,39 +59,57 @@ app.get('/api/reports/:id', (req, res) => {
 app.patch('/api/reports/:id/status', (req, res, next) => {
   try {
     const opId = req.header('Idempotency-Key'); if (!opId) return res.status(400).json({ code: 'MISSING_IDEMPOTENCY_KEY', message: 'Idempotency-Key is required.' });
-    const replay = getOp.get(opId) as any; if (replay) return res.status(replay.response_status).json(JSON.parse(replay.response_body));
+    const to = z.enum(statuses).parse(req.body.status) as Status;
     const result = db.transaction(() => {
+      const replay = getOp.get(opId) as any;
+      if (replay) return { status: replay.response_status, body: JSON.parse(replay.response_body) };
       const row = reportRow.get(req.params.id) as any;
-      if (!row) return { status: 404, body: { code: 'NOT_FOUND', message: 'Report not found.' } };
-      const to = req.body.status as Status, from = row.status as Status;
-      if (role(req) !== 'coordinator') return { status: 403, body: { code: 'FORBIDDEN', message: 'Only coordinators can change report status.' } };
-      if (!canTransition(from, to)) return { status: 409, body: { code: 'INVALID_TRANSITION', message: `Cannot move from ${from} to ${to}.`, from, to, allowed: (awaitlessTransitions(from)) } };
-      const now = new Date().toISOString(); db.prepare('UPDATE reports SET status = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(to, now, row.id);
-      insertHistory(row.id, 'STATUS_CHANGED', from, to, role(req));
-      return { status: 200, body: toReport(reportRow.get(row.id)) };
+      let outcome: { status: number; body: any };
+      if (!row) outcome = { status: 404, body: { code: 'NOT_FOUND', message: 'Report not found.' } };
+      else if (role(req) !== 'coordinator') outcome = { status: 403, body: { code: 'FORBIDDEN', message: 'Only coordinators can change report status.' } };
+      else {
+        const from = row.status as Status;
+        if (!canTransition(from, to)) outcome = { status: 409, body: { code: 'INVALID_TRANSITION', message: `Cannot move from ${from} to ${to}.`, from, to, allowed: awaitlessTransitions(from) } };
+        else {
+          const now = new Date().toISOString(); db.prepare('UPDATE reports SET status = ?, updated_at = ?, version = version + 1 WHERE id = ?').run(to, now, row.id);
+          insertHistory(row.id, 'STATUS_CHANGED', from, to, role(req));
+          outcome = { status: 200, body: toReport(reportRow.get(row.id)) };
+        }
+      }
+      saveOp.run(opId, row?.id ?? req.params.id, outcome.status, JSON.stringify(outcome.body), new Date().toISOString());
+      return outcome;
     })();
-    if (result.status >= 500) return res.status(result.status).json(result.body);
-    db.transaction(() => saveOp.run(opId, req.params.id, result.status, JSON.stringify(result.body), new Date().toISOString()))();
     return res.status(result.status).json(result.body);
   } catch (e) { next(e); }
 });
 function awaitlessTransitions(status: Status) { return ({ Draft: ['Submitted'], Submitted: ['Assigned', 'Rejected'], Assigned: ['In Progress', 'Rejected'], 'In Progress': ['Resolved', 'Rejected'], Resolved: [], Rejected: [] } as Record<Status, string[]>)[status]; }
 
-app.patch('/api/reports/:id', (req, res) => {
-  const row = reportRow.get(req.params.id) as any; if (!row) return res.status(404).json({ code: 'NOT_FOUND', message: 'Report not found.' });
-  if (req.body.baseVersion !== row.version) return res.status(409).json({ code: 'VERSION_CONFLICT', message: 'Report changed on the server.', current: toReport(row) });
-  const now = new Date().toISOString();
-  const fields = ['description', 'priority', 'category'] as const;
-  const updates = fields.filter(k => req.body[k] !== undefined);
-  if (req.body.location) { req.body.lat = req.body.location.lat; req.body.lng = req.body.location.lng; req.body.location_text = req.body.location.text; }
-  const cols: Record<string, string> = { description: 'description', priority: 'priority', category: 'category', lat: 'lat', lng: 'lng', location_text: 'location_text' };
-  const sets: string[] = [], values: unknown[] = [];
-  for (const k of updates) { sets.push(`${cols[k]} = ?`); values.push(req.body[k]); }
-  for (const k of ['lat', 'lng', 'location_text']) if (req.body[k] !== undefined) { sets.push(`${k} = ?`); values.push(req.body[k]); }
-  if (req.body.customFields) { sets.push('custom_fields = ?'); values.push(JSON.stringify(req.body.customFields)); }
-  sets.push('updated_at = ?', 'version = version + 1'); values.push(now, row.id);
-  db.prepare(`UPDATE reports SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-  insertHistory(row.id, 'UPDATED', row.status, row.status, role(req)); res.json(toReport(reportRow.get(row.id)));
+app.patch('/api/reports/:id', (req, res, next) => {
+  try {
+    const opId = req.header('Idempotency-Key'); if (!opId) return res.status(400).json({ code: 'MISSING_IDEMPOTENCY_KEY', message: 'Idempotency-Key is required.' });
+    const patch = reportPatchSchema.parse(req.body);
+    const result = db.transaction(() => {
+      const replay = getOp.get(opId) as any;
+      if (replay) return { status: replay.response_status, body: JSON.parse(replay.response_body) };
+      const row = reportRow.get(req.params.id) as any;
+      let outcome: { status: number; body: any };
+      if (!row) outcome = { status: 404, body: { code: 'NOT_FOUND', message: 'Report not found.' } };
+      else if (patch.baseVersion !== row.version) outcome = { status: 409, body: { code: 'VERSION_CONFLICT', message: 'Report changed on the server.', current: toReport(row) } };
+      else {
+        const sets: string[] = [], values: unknown[] = [];
+        for (const key of ['description', 'priority', 'category'] as const) if (patch[key] !== undefined) { sets.push(`${key} = ?`); values.push(patch[key]); }
+        if (patch.location) for (const [key, value] of [['lat', patch.location.lat], ['lng', patch.location.lng], ['location_text', patch.location.text]] as const) { sets.push(`${key} = ?`); values.push(value ?? null); }
+        if (patch.customFields) { sets.push('custom_fields = ?'); values.push(JSON.stringify(patch.customFields)); }
+        const now = new Date().toISOString(); sets.push('updated_at = ?', 'version = version + 1'); values.push(now, row.id);
+        db.prepare(`UPDATE reports SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+        insertHistory(row.id, 'UPDATED', row.status, row.status, role(req));
+        outcome = { status: 200, body: toReport(reportRow.get(row.id)) };
+      }
+      saveOp.run(opId, row?.id ?? req.params.id, outcome.status, JSON.stringify(outcome.body), new Date().toISOString());
+      return outcome;
+    })();
+    return res.status(result.status).json(result.body);
+  } catch (e) { next(e); }
 });
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

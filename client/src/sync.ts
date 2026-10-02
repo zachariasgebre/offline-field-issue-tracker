@@ -43,6 +43,20 @@ export function syncNow() {
   })().finally(() => { syncing = undefined; });
   return syncing;
 }
+export async function retryReport(clientId: string) {
+  await db.transaction('rw', db.reports, db.outbox, async () => {
+    const ops = await db.outbox.where('clientId').equals(clientId).toArray();
+    for (const op of ops) {
+      if (op.permanentlyFailed) {
+        await db.outbox.delete(op.opId);
+        await db.outbox.put({ ...op, opId: crypto.randomUUID(), attempts: 0, nextRetryAt: undefined, lastError: undefined, permanentlyFailed: false, createdAt: new Date().toISOString() });
+      } else await db.outbox.update(op.opId, { attempts: 0, nextRetryAt: undefined, lastError: undefined });
+    }
+    const report = await db.reports.get(clientId);
+    if (report) { report.syncState = 'pending'; report.syncAttempts = 0; report.lastSyncError = undefined; await db.reports.put(report); }
+  });
+  return syncNow();
+}
 async function pullUpdates() {
   try {
     const response = await fetch(`${api}/api/reports?updatedSince=${encodeURIComponent(new Date(Date.now() - 86_400_000).toISOString())}`);

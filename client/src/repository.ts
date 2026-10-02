@@ -1,10 +1,11 @@
-import { InvalidTransitionError, canTransition, type ReportInput, type Status } from '@field/shared';
+import { InvalidTransitionError, canTransition, reportInputSchema, type ReportInput, type Status } from '@field/shared';
 import { db, type OutboxOp, type Report } from './db.js';
 
 const uuid = () => globalThis.crypto.randomUUID();
 export async function createReport(input: Omit<ReportInput, 'clientId' | 'reportedAt' | 'status'> & { status?: Status }) {
   const now = new Date().toISOString(), clientId = uuid();
-  const report: Report = { ...input, clientId, reportedAt: now, status: input.status ?? 'Draft', syncState: 'pending', syncAttempts: 0, updatedAt: now };
+  const parsed = reportInputSchema.parse({ ...input, clientId, reportedAt: now, status: input.status ?? 'Submitted' });
+  const report: Report = { ...parsed, syncState: 'pending', syncAttempts: 0, updatedAt: now };
   await db.transaction('rw', db.reports, db.outbox, db.history, async () => {
     await db.reports.put(report);
     if (report.status !== 'Draft') await db.outbox.put({ opId: uuid(), clientId, type: 'CREATE', payload: toPayload(report), createdAt: now, attempts: 0, permanentlyFailed: false });
